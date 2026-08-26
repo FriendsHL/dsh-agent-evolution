@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 const checkout = process.env.DSH_CHECKOUT
-if (!checkout) throw new Error('DSH_CHECKOUT is required by the reviewed-development integration fixture')
+if (!checkout) throw new Error('DSH_CHECKOUT is required by the Agent Evolution integration fixture')
 
 const { installModelSelection } = await import(pathToFileURL(`${checkout}/packages/core/agent/src/index.ts`).href)
 const { createUserMessage } = await import(pathToFileURL(`${checkout}/packages/llm/llm/src/index.ts`).href)
 const { SessionId } = await import(pathToFileURL(`${checkout}/packages/core/session/src/index.ts`).href)
 
-export const name = 'reviewed-development-preset-headless-runner'
-export const inject = ['agentDefaultModel', 'agents', 'agentPresets', 'sessions']
+export const name = 'agent-evolution-preset-headless-runner'
+export const inject = ['agentDefaultModel', 'agents', 'agentPresets', 'sessions', 'subagents']
 
 function finalText(events) {
   const message = events.findLast(event => event.type === 'assistant/message'
@@ -44,10 +44,14 @@ export function apply(ctx) {
         source: { kind: 'user' },
       }))
       await agent.whenIdle()
+      const catalog = await ctx.subagents.listChildren(agent.session.header.id)
       await ctx.sessions.flush(agent.session)
-      process.stdout.write(`${finalText(agent.session.events)}\n`)
+      const text = catalog.length === 0
+        ? finalText(agent.session.events)
+        : `EXPERIMENT_SUBAGENT_CATALOG_FAILED: ${JSON.stringify(catalog)}`
+      process.stdout.write(`${text}\n`)
       const end = agent.session.events.findLast(event => event.type === 'turn/end')
-      exit(end?.data.reason?.kind === 'completed' ? 0 : 1)
+      exit(end?.data.reason?.kind === 'completed' && catalog.length === 0 ? 0 : 1)
     } finally {
       await handle.dispose()
     }

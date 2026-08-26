@@ -1,81 +1,79 @@
-# dsh-reviewed-development-orchestrator
+# dsh-agent-evolution
 
 [简体中文](README.zh-CN.md)
 
-A public DeepSeek Harness bundle that enforces a reviewed software-development process through five fresh DSH SubAgent sessions:
+`dsh-agent-evolution` is a public DeepSeek Harness bundle for controlled Agent composition experiments. Its first runtime plugin, `agent-experiment-runner`, runs the same standalone task in fresh Agents assembled from explicit DSH presets and returns evidence for later evaluation.
 
-```text
-Designer -> Design Reviewer -> Implementer -> Code Reviewer -> QA
-```
+The bundle supplies primitives rather than an autonomous evolution loop. It does not score outputs, select winners, edit presets or plugins, promote candidates, or publish changes.
 
-The single model-facing tool is `run_reviewed_development`. Review failures stop the run, and QA cannot report completion merely by claiming tests passed: a QA `PASS` is accepted only when every approved test-plan command has a matching successful shell call and result in the QA child session.
+## Runtime tools
 
-## What the bundle installs
+- `agent_experiment_list_presets` lists presets authorized by the deployment.
+- `agent_experiment_run` runs one task with one preset.
+- `agent_experiment_compare` runs one task sequentially with baseline and candidate presets and returns both records without choosing a winner.
 
-The bundle inserts one runtime plugin, `reviewed-development-orchestrator`. That plugin registers one tool and uses the existing DSH `spawn` SubAgent provider. It does not copy presets, replace the Agent loop, or install a second transcript store. Spawned roles inherit the initiating Agent's preset, model route, workspace, sandbox policy, and delegated approval policy.
+Each run returns the preset id, child session id, stop reason, elapsed time, final assistant content, and `persisted`. The child log is flushed before its Agent handle is disposed. `persisted: true` means a DSH durability listener acknowledged the complete log before the tool returned; `persisted: false` means the run completed but no durability listener was installed, so callers must not treat the session id as durable.
 
-Each role receives a fixed persona, structured-output schema, and tool restriction. Each child session remains the durable source for its complete prompt, output, tool evidence, provider descriptor, lineage, and selected preset. The parent receives a compact ordered summary with child session ids.
-
-## Process and gates
-
-1. Designer inspects the repository and returns a decision-complete design, risks, and an exact test plan. Its persona prohibits commit, push, publish, merge, and promotion steps.
-2. Design Reviewer returns `PASS`, `CHANGES_REQUIRED`, or `BLOCKED`. It is instructed to return `BLOCKED` when the design or test plan includes a prohibited release operation. Only `PASS` starts implementation.
-3. Implementer changes the workspace according to the approved design and reports changed files and checks run. Its persona prohibits commit, push, publish, merge, and promotion.
-4. Code Reviewer independently checks specification compliance and code quality. It is instructed to return `BLOCKED` when the implementation report indicates a prohibited release operation. Only `PASS` starts QA.
-5. QA executes every other approved test command and returns `PASS`, `FAIL`, or `BLOCKED`. It is instructed not to execute a test command that includes or performs a prohibited release operation and to return `BLOCKED`. A reported `PASS` is cross-checked against recorded shell events before the run becomes `completed`.
-
-The orchestrator implements no dedicated commit, push, publish, merge, or promotion operation. All five fixed personas prohibit those actions; the review and QA personas also define the blocking behavior above. These are behavioral workflow gates rather than a security guarantee: inherited shell tools retain whatever authority the deployment sandbox grants. Deployments that need enforcement must restrict credentials, network access, tools, and filesystem permissions outside this plugin. Version 0.1 does not automatically revise work after a failed gate.
+Experiment children are ordinary lineage-bearing Agents. Their session headers record `parentSession`, `delegationDepth`, and `agentPreset`, but not `origin: subagent`, and they do not appear in SubAgent catalog, continuation, or control APIs. The plugin uses this path because the current standard SubAgent request cannot select an Agent preset.
 
 ## Install
 
-DSH is in developer preview. Pin a reviewed commit:
+DSH is in developer preview. Pin a reviewed commit when installing from GitHub:
 
 ```sh
-dsh plugin --profile web add github:FriendsHL/dsh-reviewed-development-orchestrator#<commit>
+dsh plugin --profile web add github:FriendsHL/dsh-agent-evolution#<commit>
 ```
 
-The bundle contributes:
+The package contributes this profile patch:
 
 ```yaml
 - insert:
-    - id: reviewed-development-orchestrator
-      name: dsh-reviewed-development-orchestrator
+    - id: agent-experiment-runner
+      name: dsh-agent-evolution
       config:
-        providerName: spawn
         maxDepth: 3
 ```
 
 For local development:
 
 ```sh
-dsh plugin --profile web add link:/absolute/path/to/dsh-reviewed-development-orchestrator
+dsh plugin --profile web add link:/absolute/path/to/dsh-agent-evolution
 ```
+
+Restart a running DSH process after adding or changing the bundle so Loader assembles the new profile.
 
 ## Configuration
 
 | Field | Default | Purpose |
 | --- | --- | --- |
-| `providerName` | `spawn` | Registered fresh in-process spawn provider. |
-| `maxDepth` | `3` | Absolute delegation-depth cap applied to every role. |
-| `maxTokens` | inherited | Optional positive token limit applied symmetrically to every role. |
-| `shellToolName` | `bash` (`pwsh` on Windows) | Supported shell tool whose persisted calls/results prove QA execution; other names are rejected. |
-| `designerTools` | inherited | Optional non-empty allowlist for the Designer. |
-| `reviewerTools` | inherited | Optional non-empty allowlist shared by both reviewers. |
-| `qaTools` | inherited | Optional non-empty QA allowlist; it must contain `shellToolName`. |
+| `maxDepth` | `3` | Absolute delegation-depth limit for experiment children. |
+| `maxTokens` | inherited | Optional positive output-token limit when a tool call does not override it. |
+| `allowedPresets` | system-trust roster | Optional non-empty preset-id allowlist. Explicit entries may include user-trust presets. |
+| `listToolName` | `agent_experiment_list_presets` | Model-visible discovery tool name. |
+| `runToolName` | `agent_experiment_run` | Model-visible single-run tool name. |
+| `compareToolName` | `agent_experiment_compare` | Model-visible comparison tool name. |
 
-The orchestration tool is always denied inside child roles. Tool filtering controls model visibility and dispatch, not filesystem security; the host sandbox remains authoritative. Unknown configured tools fail when the child starts.
+Without `allowedPresets`, discovery and execution admit only presets from roots configured with `trust: system`. With an explicit allowlist, every id is resolved when the plugin loads; unknown or broken entries prevent activation. A requested preset is resolved again before execution so deletion or damage fails before an Agent starts.
 
-## Tool input and result
+Selecting a preset can change the child's model-visible tools, skills, prompts, compaction, and other Agent-plane plugins. The child inherits the parent's model route unless `provider` and `model` are supplied together, inherits the parent's explicit sandbox override, and receives delegated `approval: never` when approval is composed. Preset authorization does not replace deployment review of the capabilities that each preset mounts.
 
-`run_reviewed_development` accepts a non-empty standalone `task`. Optional `provider` and `model` overrides must be supplied together. Optional `max_tokens` applies to all five roles.
+Tool names must be non-empty and distinct. `allowedPresets` cannot be empty, contain blank ids, or contain duplicates. `maxDepth`, `maxTokens`, and per-call `max_tokens` reject invalid values during configuration or request validation.
 
-Terminal statuses are `completed`, `changes_required`, `failed`, `blocked`, `cancelled`, and `error`. Phase records include the role, child session id, stop reason, duration, verdict where applicable, summary, and validated structured result. Inspect the listed child sessions for complete evidence.
+## Run and comparison behavior
 
-## Development policy
+Both execution tools require a non-empty, standalone `task`. A provider override and model override must be supplied together. The stable stop reasons are `completed`, `max-tokens`, `aborted`, `refusal`, and `error`; a non-completed stop reason is still a valid experiment record rather than an infrastructure exception.
 
-Repository changes follow the same separation enforced at runtime: design and mapped test plan, independent design review, implementation by a development SubAgent, independent code review, and QA execution with fresh evidence. See [CONTRIBUTING.md](CONTRIBUTING.md) and the accepted [design](docs/designs/0001-software-development-orchestrator.md).
+Comparison resolves and authorizes both presets before starting either child. It runs the baseline first and then runs the candidate even when the baseline has a non-completed stop reason. A creation, execution, persistence, or cleanup exception stops the comparison and prevents the next child from starting. Cancellation before or between runs also prevents the next child; cancellation during a run is forwarded to that child.
 
-## Verification
+DSH session logs are the transcript authority. This bundle creates no second transcript or evaluation store. Inspect a durable returned session for the complete prompt, tool calls, results, and output.
+
+## Evolution layers
+
+The experiment runner is the first layer of the bundle. Evaluators, failure attribution, candidate authoring, and promotion or rollback are separate, deferred capabilities so deployments can permission and test them independently.
+
+## Development and verification
+
+Repository contributions follow the independent design, implementation, review, and QA policy in [CONTRIBUTING.md](CONTRIBUTING.md). That policy governs changes to this repository and is not part of the runtime plugin.
 
 ```sh
 pnpm run check
@@ -83,18 +81,7 @@ pnpm run check
 DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-The keyless installed-package suite packs the real npm artifact, installs it through `dsh plugin` into isolated Headless and Web profiles, and verifies:
-
-- all five roles run through DSH's real `spawn` provider in order;
-- all children inherit the initiating `minimal` preset;
-- design rejection stops before implementation;
-- QA executes the approved command through the real shell tool and its persisted result is successful;
-- the parent keeps the compact tool result and child ids;
-- built DSH Web starts and serves HTTP 200.
-
-The deterministic adapter proves bundle loading, orchestration, tools, lifecycle, persistence, and gates without an API key. It does not replace an optional real-provider smoke.
-
-See [Architecture](docs/architecture.md) for the runtime design and limitations.
+The keyless integration suite packs the real npm artifact, installs it through `dsh plugin`, invokes all three model tools through a deterministic LLM adapter, verifies immediate JSONL persistence and the absence of SubAgent catalog entries, and starts the built DSH Web application. See [Architecture](docs/architecture.md) for the component and failure model.
 
 ## License
 

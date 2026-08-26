@@ -1,81 +1,79 @@
-# dsh-reviewed-development-orchestrator
+# dsh-agent-evolution
 
 [English](README.md)
 
-这是一个公开的 DeepSeek Harness bundle，通过五个全新的 DSH SubAgent session 强制执行带独立评审的软件开发流程：
+`dsh-agent-evolution` 是一个公开的 DeepSeek Harness bundle，用于受控的 Agent 组合实验。首个运行时插件 `agent-experiment-runner` 会按指定 DSH preset 组装全新的 Agent，在这些 Agent 中运行同一项独立任务，并返回供后续评估使用的证据。
 
-```text
-设计 Agent -> 设计评审 Agent -> 开发 Agent -> 代码评审 Agent -> QA Agent
-```
+这个 bundle 提供基础能力，不是完整的自动进化循环。它不会自动评分、选择胜者、修改 preset 或 plugin、提升候选版本，也不会发布变更。
 
-它只暴露一个模型工具：`run_reviewed_development`。评审不通过会立即停止；QA 也不能只靠文字声称测试通过。只有当批准的每条测试命令都能在 QA 子 session 中找到匹配且成功的 shell 调用与结果时，QA 的 `PASS` 才会被接受。
+## 运行时工具
 
-## Bundle 安装什么
+- `agent_experiment_list_presets` 列出部署方授权的 preset。
+- `agent_experiment_run` 用一个 preset 运行一次任务。
+- `agent_experiment_compare` 用 baseline 和 candidate preset 依次运行同一任务，返回两份记录，但不判断胜负。
 
-Bundle 插入一个运行时插件 `reviewed-development-orchestrator`。该插件注册一个工具，并调用 DSH 已有的 `spawn` SubAgent provider。它不复制 preset、不替换 Agent loop，也不建立第二套对话存储。
+每次运行返回 preset id、子 session id、停止原因、耗时、最终 assistant 内容和 `persisted`。插件先 flush 子 session 日志，再释放 Agent handle。`persisted: true` 表示 DSH 持久化 listener 已在工具返回前确认完整日志；`persisted: false` 表示运行已完成，但当前没有持久化 listener，调用方不能把该 session id 当作持久化引用。
 
-每个角色都有固定 persona、结构化输出 schema 和工具限制。子 Agent 继承入口 Agent 的 preset、模型路由、工作目录、sandbox policy 和委托后的 approval policy。每个子 session 是完整 prompt、输出、工具证据、provider descriptor、lineage 和 preset 信息的持久化依据；父 Agent 只接收带子 session id 的紧凑阶段摘要。
-
-## 固定流程
-
-1. 设计 Agent 检查仓库，给出可直接实施的设计、风险和精确测试方案；其 persona 禁止把 commit、push、publish、merge 或 promotion 写入实施或测试步骤。
-2. 设计评审 Agent 返回 `PASS`、`CHANGES_REQUIRED` 或 `BLOCKED`；当设计或测试方案包含上述发布操作时，其 persona 要求返回 `BLOCKED`。只有 `PASS` 才进入开发。
-3. 开发 Agent 按已批准设计修改工作区，并报告变更文件与已运行检查；其 persona 禁止 commit、push、publish、merge 和 promotion。
-4. 代码评审 Agent 独立检查需求符合度和代码质量；当实现报告表明执行过上述发布操作时，其 persona 要求返回 `BLOCKED`。只有 `PASS` 才进入 QA。
-5. QA Agent 执行其他已批准测试命令，返回 `PASS`、`FAIL` 或 `BLOCKED`；遇到包含或执行上述发布操作的测试命令时，其 persona 要求不要执行并返回 `BLOCKED`。编排器会用 session 中的真实 shell 事件复核 `PASS`。
-
-编排器自身不实现专用的 commit、push、publish、merge 或 preset 提升操作。五个固定 persona 均明确禁止这些行为，评审和 QA persona 还定义了上述阻断行为。但这些是行为层工作流门禁，不是安全保证：继承的 shell 仍具有部署 sandbox 所授予的权限。需要强制隔离时，部署方必须在本插件之外限制凭据、网络、工具和文件系统权限。首个版本不会在评审失败后自动修改重试。
+实验子 Agent 是带 lineage 的普通 Agent。其 session header 记录 `parentSession`、`delegationDepth` 和 `agentPreset`，但不记录 `origin: subagent`，因此不会进入 SubAgent catalog、continuation 或 control API。插件采用这条路径，是因为当前标准 SubAgent request 不能选择 Agent preset。
 
 ## 安装
 
-DSH 仍处于开发预览阶段，建议固定到已审查的 commit：
+DSH 仍处于开发预览阶段。从 GitHub 安装时应固定到已评审的 commit：
 
 ```sh
-dsh plugin --profile web add github:FriendsHL/dsh-reviewed-development-orchestrator#<commit>
+dsh plugin --profile web add github:FriendsHL/dsh-agent-evolution#<commit>
 ```
 
-Bundle 提供以下配置层：
+包中提供以下 profile patch：
 
 ```yaml
 - insert:
-    - id: reviewed-development-orchestrator
-      name: dsh-reviewed-development-orchestrator
+    - id: agent-experiment-runner
+      name: dsh-agent-evolution
       config:
-        providerName: spawn
         maxDepth: 3
 ```
 
-本地开发：
+本地开发安装：
 
 ```sh
-dsh plugin --profile web add link:/absolute/path/to/dsh-reviewed-development-orchestrator
+dsh plugin --profile web add link:/absolute/path/to/dsh-agent-evolution
 ```
+
+添加或修改 bundle 后，需要重启正在运行的 DSH 进程，让 Loader 重新组装 profile。
 
 ## 配置
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `providerName` | `spawn` | 已注册的全新进程内 spawn provider。 |
-| `maxDepth` | `3` | 所有角色共用的绝对委托深度上限。 |
-| `maxTokens` | 继承 | 可选正整数，统一应用到所有角色。 |
-| `shellToolName` | `bash`（Windows 为 `pwsh`） | 用于核验 QA 真实执行记录的受支持 shell 工具名；其他名称会被拒绝。 |
-| `designerTools` | 继承 | 设计 Agent 可选的非空工具白名单。 |
-| `reviewerTools` | 继承 | 两个 Reviewer 共用的可选非空工具白名单。 |
-| `qaTools` | 继承 | QA 可选非空工具白名单，必须包含 `shellToolName`。 |
+| `maxDepth` | `3` | 实验子 Agent 的绝对委托深度上限。 |
+| `maxTokens` | 继承 | 工具调用未覆盖时采用的可选正整数输出 token 上限。 |
+| `allowedPresets` | system-trust roster | 可选的非空 preset id 白名单；显式条目可以包含 user-trust preset。 |
+| `listToolName` | `agent_experiment_list_presets` | 模型可见的 preset 查询工具名。 |
+| `runToolName` | `agent_experiment_run` | 模型可见的单次运行工具名。 |
+| `compareToolName` | `agent_experiment_compare` | 模型可见的对比工具名。 |
 
-编排工具在所有子角色中始终不可用。工具过滤只控制模型可见性与调用权限，不是文件系统安全边界；真正的权限仍由宿主 sandbox 决定。配置未知工具时，子 Agent 启动会明确失败。
+未配置 `allowedPresets` 时，查询和执行仅允许来自 `trust: system` root 的 preset。配置显式白名单时，插件加载阶段会解析每个 id；未知或损坏的条目会阻止插件启动。每次执行前还会再次解析目标 preset，因此运行期间被删除或损坏的 preset 会在创建 Agent 之前失败。
 
-## 工具输入与结果
+选择不同 preset 会改变子 Agent 的模型可见工具、skill、prompt、上下文压缩和其他 Agent-plane plugin。子 Agent 默认继承父 Agent 的模型路由；调用方也可以同时提供 `provider` 和 `model`。子 Agent 继承父 session 的显式 sandbox override；当 approval 能力存在时，委托策略固定为 `approval: never`。Preset 白名单不能替代部署方对各 preset 所加载能力的安全审核。
 
-`run_reviewed_development` 接收非空、可独立理解的 `task`。可选的 `provider` 与 `model` 必须成对提供；`max_tokens` 会统一应用到五个角色。
+三个工具名必须非空且互不相同。`allowedPresets` 不能是空数组，也不能包含空 id 或重复 id。`maxDepth`、`maxTokens` 和调用参数 `max_tokens` 会在配置或请求校验阶段拒绝非法值。
 
-终态包括 `completed`、`changes_required`、`failed`、`blocked`、`cancelled` 和 `error`。每个阶段记录角色、子 session id、停止原因、耗时、适用时的 verdict、摘要和已验证结构化结果。完整证据应通过返回的子 session id 查看。
+## 运行与对比语义
 
-## 开发规范
+两个执行工具都要求非空且可独立理解的 `task`。`provider` 和 `model` 覆盖值必须同时提供。稳定停止原因包括 `completed`、`max-tokens`、`aborted`、`refusal` 和 `error`；非 `completed` 停止原因仍是有效实验记录，并不等同于基础设施异常。
 
-本仓库自身也执行相同分工：先写设计和对应测试方案，独立设计评审通过后交给开发 SubAgent，实现后进行独立代码评审，最后由 QA Agent 按批准方案提供新鲜测试证据。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 和已通过评审的[设计文档](docs/designs/0001-software-development-orchestrator.md)。
+对比工具会在启动任何子 Agent 前解析并授权两个 preset，然后先运行 baseline，再运行 candidate。即使 baseline 以非 `completed` 原因结束，candidate 仍会运行。创建、执行、持久化或清理异常会终止对比，并阻止下一个子 Agent 启动。运行前或两次运行之间发生取消时也不会启动下一个子 Agent；运行期间的取消会转发给当前子 Agent。
 
-## 验证
+DSH session 日志是完整对话记录的唯一依据。这个 bundle 不会创建第二套 transcript 或评估存储。对于 `persisted: true` 的结果，可通过返回的 session id 检查完整 prompt、工具调用、工具结果和输出。
+
+## 进化能力分层
+
+Experiment Runner 是这个 bundle 的第一层。Evaluator、失败归因、候选版本编写以及提升或回滚属于相互独立的后续能力，便于部署方分别授权和验证。
+
+## 开发与验证
+
+仓库贡献遵循 [CONTRIBUTING.md](CONTRIBUTING.md) 中的独立设计、开发、评审和 QA 规范。该规范只约束本仓库的开发过程，不属于运行时插件能力。
 
 ```sh
 pnpm run check
@@ -83,11 +81,7 @@ pnpm run check
 DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-无 API key 的安装集成测试会打包真实 npm tarball，通过 `dsh plugin` 安装到隔离的 Headless 与 Web profile，并验证：五个角色按顺序走真实 `spawn` provider；所有子 Agent 继承入口的 `minimal` preset；设计拒绝后不会进入开发；QA 通过真实 shell 工具执行批准命令且持久化结果成功；父 session 保存紧凑结果与子 session id；构建后的 DSH Web 能启动并返回 HTTP 200。
-
-确定性 adapter 验证 bundle 加载、编排、工具、生命周期、持久化和 gate，不代表真实模型 provider 的兼容性；真实 provider smoke 可另行执行。
-
-运行时结构与限制见 [Architecture](docs/architecture.md)。
+无 API key 的集成测试会打包真实 npm artifact，通过 `dsh plugin` 安装，使用确定性 LLM adapter 调用全部三个模型工具，验证 JSONL 日志在工具返回时已可读取、实验 Agent 不进入 SubAgent catalog，并启动构建后的 DSH Web 应用。组件关系和失败语义见 [Architecture](docs/architecture.md)。
 
 ## License
 

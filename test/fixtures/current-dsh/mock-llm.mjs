@@ -1,7 +1,9 @@
+import { readFile, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const checkout = process.env.DSH_CHECKOUT
-if (!checkout) throw new Error('DSH_CHECKOUT is required by the reviewed-development integration fixture')
+if (!checkout) throw new Error('DSH_CHECKOUT is required by the Agent Evolution integration fixture')
 
 const {
   CallId,
@@ -10,9 +12,6 @@ const {
 } = await import(pathToFileURL(`${checkout}/packages/llm/llm/src/index.ts`).href)
 
 const OFF = ReasoningEffortId('off')
-const QA_COMMAND = "printf 'QA_OK\\n'"
-const IMPLEMENT_MARKER = `${process.env.DSH_HOME}/reviewed-development-implementer.marker`
-const IMPLEMENT_COMMAND = `printf 'implemented\\n' > ${JSON.stringify(IMPLEMENT_MARKER)}`
 
 function messageText(messages) {
   return messages.flatMap(message => message.content)
@@ -29,6 +28,25 @@ function toolCalls(messages) {
 function toolResults(messages) {
   return messages.flatMap(message => message.content)
     .filter(block => block.type === 'tool-result')
+}
+
+function resultText(result) {
+  return result?.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('') ?? ''
+}
+
+async function persistedSession(id) {
+  const root = join(process.env.DSH_HOME, 'sessions')
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+    const content = await readFile(join(entry.parentPath, entry.name), 'utf8')
+    const header = JSON.parse(content.split(/\r?\n/, 1)[0])
+    if (header.id === id) return content
+  }
+  throw new Error(`session ${id} was not durable when its tool result became model-visible`)
 }
 
 async function* emitToolCall(id, name, args) {
@@ -52,15 +70,7 @@ async function* emitText(text) {
   yield { type: 'finish', reason: { kind: 'stop' } }
 }
 
-function designerArtifact() {
-  return {
-    design: 'Use the approved fixture-only implementation path.',
-    testPlan: [{ id: 'qa-shell', objective: 'Prove QA executes a real shell command.', command: QA_COMMAND, expectedResult: 'QA_OK and exit 0' }],
-    risks: [{ risk: 'false positive', mitigation: 'verify the persisted shell call and result' }],
-  }
-}
-
-class ReviewedDevelopmentMockAdapter extends LlmAdapter {
+class AgentEvolutionMockAdapter extends LlmAdapter {
   async resolveModel(provider, model) {
     return {
       provider,
@@ -75,87 +85,78 @@ class ReviewedDevelopmentMockAdapter extends LlmAdapter {
 
   async* stream(options) {
     const text = messageText(options.messages)
+    if (text.includes('EXPERIMENT_SINGLE_TASK')) {
+      yield* emitText('EXPERIMENT_SINGLE_OK')
+      return
+    }
+    if (text.includes('EXPERIMENT_COMPARE_TASK')) {
+      yield* emitText('EXPERIMENT_COMPARE_OK')
+      return
+    }
+
     const calls = toolCalls(options.messages)
     const results = toolResults(options.messages)
-
-    if (text.includes('# Passing code-review report')) {
-      if (!calls.some(call => call.name === 'bash')) {
-        yield* emitToolCall('qa-shell-call', 'bash', { command: QA_COMMAND, description: 'run the approved QA probe' })
+    if (!calls.some(call => call.name === 'agent_experiment_list_presets')) {
+      yield* emitToolCall('experiment-list', 'agent_experiment_list_presets', {})
+      return
+    }
+    if (!calls.some(call => call.name === 'agent_experiment_run')) {
+      const listed = resultText(results.at(-1))
+      if (!listed.includes('minimal')) {
+        yield* emitText(`EXPERIMENT_PROBE_FAILED: minimal preset missing: ${listed}`)
         return
       }
-      yield* emitToolCall('qa-output', 'structured_output', {
-        verdict: 'PASS',
-        summary: 'The approved command passed.',
-        checks: [{ id: 'qa-shell', command: QA_COMMAND, exitCode: 0, evidence: 'QA_OK' }],
-        findings: [],
+      yield* emitToolCall('experiment-run', 'agent_experiment_run', {
+        preset: 'minimal',
+        task: 'EXPERIMENT_SINGLE_TASK',
       })
       return
     }
-
-    if (text.includes('# Implementation report')) {
-      yield* emitToolCall('code-review-output', 'structured_output', {
-        verdict: 'PASS',
-        summary: 'Implementation matches the approved design.',
-        findings: [],
-      })
-      return
-    }
-
-    if (text.includes('# Approved design and test plan')) {
-      if (!calls.some(call => call.name === 'bash')) {
-        yield* emitToolCall('implementation-shell', 'bash', {
-          command: IMPLEMENT_COMMAND,
-          description: 'write the integration implementation marker',
-        })
+    if (!calls.some(call => call.name === 'agent_experiment_compare')) {
+      const runResult = resultText(results.at(-1))
+      const sessionId = runResult.match(/session=([^,]+),/)?.[1]
+      if (!runResult.includes('EXPERIMENT_SINGLE_OK')
+        || !runResult.includes('persisted=true')
+        || sessionId === undefined) {
+        yield* emitText(`EXPERIMENT_PROBE_FAILED: invalid run evidence: ${runResult}`)
         return
       }
-      yield* emitToolCall('implementation-output', 'structured_output', {
-        summary: 'Created the integration implementation marker.',
-        changedFiles: ['$DSH_HOME/reviewed-development-implementer.marker'],
-        testsRun: [{ command: IMPLEMENT_COMMAND, exitCode: 0 }],
+      const durable = await persistedSession(sessionId)
+      if (!durable.includes('EXPERIMENT_SINGLE_OK')) {
+        yield* emitText(`EXPERIMENT_PROBE_FAILED: incomplete durable run ${sessionId}`)
+        return
+      }
+      yield* emitToolCall('experiment-compare', 'agent_experiment_compare', {
+        baseline_preset: 'minimal',
+        candidate_preset: 'minimal',
+        task: 'EXPERIMENT_COMPARE_TASK',
       })
       return
     }
 
-    if (text.includes('# Proposed design and test plan')) {
-      yield* emitToolCall('design-review-output', 'structured_output', text.includes('REJECT_DESIGN')
-        ? { verdict: 'CHANGES_REQUIRED', summary: 'The rejection branch was requested.', findings: [{ severity: 'blocker', subject: 'probe', requiredCorrection: 'Use an approvable task.' }] }
-        : { verdict: 'PASS', summary: 'The design and test plan are executable.', findings: [] })
+    const comparison = resultText(results.at(-1))
+    const sessionIds = [...comparison.matchAll(/session=([^,]+), stop=completed, persisted=true/g)]
+      .map(match => match[1])
+    if (sessionIds.length !== 2 || new Set(sessionIds).size !== 2
+      || !comparison.includes('No winner was selected')
+      || (comparison.match(/stop=completed/g) ?? []).length !== 2) {
+      yield* emitText(`EXPERIMENT_PROBE_FAILED: invalid comparison evidence: ${comparison}`)
       return
     }
-
-    if (text.includes('# Development task')) {
-      yield* emitToolCall('designer-output', 'structured_output', designerArtifact())
-      return
+    for (const sessionId of sessionIds) {
+      const durable = await persistedSession(sessionId)
+      if (!durable.includes('EXPERIMENT_COMPARE_OK')) {
+        yield* emitText(`EXPERIMENT_PROBE_FAILED: incomplete durable comparison ${sessionId}`)
+        return
+      }
     }
-
-    if (!calls.some(call => call.name === 'run_reviewed_development')) {
-      const task = text.includes('REJECT_DESIGN')
-        ? 'REJECT_DESIGN integration task'
-        : 'Complete the reviewed development integration task.'
-      yield* emitToolCall('orchestrator-run', 'run_reviewed_development', { task })
-      return
-    }
-
-    const resultText = results.at(-1)?.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
-      .join('') ?? ''
-    if (text.includes('REJECT_DESIGN')) {
-      yield* emitText(resultText.includes('changes_required') && resultText.includes('design_review')
-        ? 'ORCHESTRATOR_REJECT_OK'
-        : `ORCHESTRATOR_REJECT_FAILED: ${resultText}`)
-      return
-    }
-    yield* emitText(resultText.includes('Reviewed development: completed') && resultText.includes('session=')
-      ? 'ORCHESTRATOR_PARENT_OK'
-      : `ORCHESTRATOR_PROBE_FAILED: ${resultText}`)
+    yield* emitText('AGENT_EVOLUTION_PARENT_OK')
   }
 }
 
-export const name = 'reviewed-development-integration-mock-llm'
+export const name = 'agent-evolution-integration-mock-llm'
 export const inject = ['llm']
 
 export function apply(ctx) {
-  ctx.llm.registerAdapter(['reviewed-development-mock'], new ReviewedDevelopmentMockAdapter())
+  ctx.llm.registerAdapter(['agent-evolution-mock'], new AgentEvolutionMockAdapter())
 }

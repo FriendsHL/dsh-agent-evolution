@@ -1,7 +1,7 @@
 - id: agent-default-model
   config:
-    provider: reviewed-development-mock
-    model: reviewed-development-mock
+    provider: agent-evolution-mock
+    model: agent-evolution-mock
 
 - id: session-persistence-jsonl
   config:
@@ -21,9 +21,9 @@
             trust: system
         includeUserRoot: false
 
-    - id: reviewed-development-integration-mock-llm
+    - id: agent-evolution-integration-mock-llm
       name: './mock-llm.mjs'
 
-    - id: reviewed-development-preset-headless-runner
+    - id: agent-evolution-preset-headless-runner
       name: './preset-headless-runner.mjs'
       inject: [headlessStartup]

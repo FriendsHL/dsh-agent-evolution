@@ -1,6 +1,5 @@
 - insert:
-    - id: reviewed-development-orchestrator
-      name: dsh-reviewed-development-orchestrator
+    - id: agent-experiment-runner
+      name: dsh-agent-evolution
       config:
-        providerName: spawn
         maxDepth: 3

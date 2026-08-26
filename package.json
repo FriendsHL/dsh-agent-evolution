@@ -1,13 +1,13 @@
 {
-  "name": "dsh-reviewed-development-orchestrator",
+  "name": "dsh-agent-evolution",
   "version": "0.1.0",
-  "description": "Reviewed five-stage software-development orchestration for DeepSeek Harness",
+  "description": "Preset-composed Agent experiments for DeepSeek Harness",
   "keywords": [
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "reviewed-development",
-    "orchestrator",
+    "agent-evolution",
+    "agent-experiments",
     "multi-agent"
   ],
   "type": "module",
@@ -25,9 +25,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/orchestrator.test.js",
+    "test": "node --test test/experiment.test.js",
     "test:integration": "node --test test/current-dsh.integration.test.mjs",
-    "check": "node --check index.js && node --check src/orchestrator.js && node --check test/current-dsh.integration.test.mjs && node --check test/fixtures/current-dsh/mock-llm.mjs && node --check test/fixtures/current-dsh/preset-headless-runner.mjs && pnpm run test",
+    "check": "node --check index.js && node --check src/experiment.js && node --check src/result.js && node --check test/current-dsh.integration.test.mjs && node --check test/fixtures/current-dsh/mock-llm.mjs && node --check test/fixtures/current-dsh/preset-headless-runner.mjs && pnpm run test",
     "prepack": "pnpm run check"
   },
   "dsh": {
@@ -37,12 +37,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/FriendsHL/dsh-reviewed-development-orchestrator.git"
+    "url": "git+https://github.com/FriendsHL/dsh-agent-evolution.git"
   },
   "bugs": {
-    "url": "https://github.com/FriendsHL/dsh-reviewed-development-orchestrator/issues"
+    "url": "https://github.com/FriendsHL/dsh-agent-evolution/issues"
   },
-  "homepage": "https://github.com/FriendsHL/dsh-reviewed-development-orchestrator#readme",
+  "homepage": "https://github.com/FriendsHL/dsh-agent-evolution#readme",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -53,8 +53,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1 <5",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/dsh-agent-presets": ">=0.0.1-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-session": ">=0.0.1-rc.1 <0.2.0",
     "@deepseek-ai/dsh-subagent": ">=0.0.1-rc.1 <0.2.0",
-    "@deepseek-ai/dsh-subagent-spawn-in-process": ">=0.0.1-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.0.1-rc.1 <0.2.0",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.2.0",
     "@deepseek-ai/schemastery": ">=3.18.1 <4"
   },

@@ -1,65 +1,44 @@
 # Architecture
 
-## Objective
+## Purpose
 
-Reviewed Development Orchestrator turns one standalone software-development request into five isolated, auditable DSH SubAgent runs. Phase order and review gates belong to the plugin rather than the initiating model.
-
-## Runtime composition
+The bundle contributes `agent-experiment-runner`, a preset-aware execution primitive for a parent Agent or a later evolution controller. DSH remains responsible for Agent creation, preset composition, model routing, sandbox and approval policy, tool dispatch, and session persistence.
 
 ```text
 Parent Agent
-  -> run_reviewed_development
-     -> spawn Designer             -> structured design + test plan
-     -> spawn Design Reviewer      -> PASS gate
-     -> spawn Implementer          -> workspace changes
-     -> spawn Code Reviewer        -> PASS gate
-     -> spawn QA                   -> test report + recorded shell proof
-  <- compact phase summary + child session ids
+  -> agent_experiment_list_presets
+  -> agent_experiment_run(preset, task)
+     -> fresh experiment Agent -> flush session -> dispose handle
+  -> agent_experiment_compare(baseline, candidate, task)
+     -> fresh baseline Agent  -> flush session -> dispose handle
+     -> fresh candidate Agent -> flush session -> dispose handle
+  <- raw evidence records; no score or winner
 ```
 
-The bundle contains one runtime plugin. It consumes DSH's `ctx.subagents` service and requires the registered provider selected by `providerName` to support structured output, depth limiting, tool filtering, and personas. It also requires a fresh provider (`inheritsParentContext === false`) and rejects any returned run without `localAgent`, because QA evidence must be read from the settled local session before disposal.
+## Authorization and composition
 
-Every successful `start()` transfers one run handle to the orchestrator. It awaits `run.result`, performs phase-specific checks, and calls `run.dispose()` in `finally`. A startup rejection owns no handle. Disposal failure changes the phase to `error`; when execution also failed, the summary preserves both diagnostics.
+`AgentPresets` is the preset source. Without `allowedPresets`, the plugin exposes only rows whose discovered trust is `system`. An explicit non-empty allowlist permits exactly its ids, including user-trust rows; every entry must resolve without a discovery-reported broken reason when the plugin loads. Execution resolves the requested row again before Agent creation.
 
-## State and artifacts
+The runner calls `ctx.agents.create()` because `ctx.subagents.start()` cannot select a preset. Creation metadata copies the parent `cwd`, records `parentSession`, increments `delegationDepth`, and records the chosen `agentPreset`. It deliberately omits `origin: subagent` and does not write a `subagent/descriptor`, so SubAgent discovery does not classify an experiment session as corrupt or expose unsupported continuation and control operations.
 
-The only forward path is:
+The unpublished Agent setup first appends delegated policy overrides, then mounts the selected preset, adds the fixed permission-scope context, and denies the three experiment tools inside the child. Preset mounting determines the child's tools, prompts, skills, compaction, and other Agent-plane services. The parent route is inherited unless a request supplies a provider and model together.
 
-```text
-planning -> design_review -> implementation -> code_review -> qa -> completed
-```
+## Execution and persistence
 
-`CHANGES_REQUIRED`, `FAIL`, `BLOCKED`, cancellation, a non-completed child stop reason, malformed or missing structured output, missing local Agent, bad QA evidence, and cleanup failure stop the current run. Version 0.1 does not automatically revise and retry.
+The runner follows up with one user message and waits for the Agent to become idle. It derives the stable stop reason and final assistant blocks from the settled session, calls `ctx.sessions.flush(session)`, and disposes the Agent handle. Every acquired handle is disposed after normal completion, child failure, flush rejection, or cancellation.
 
-Each phase receives only the original task and artifacts it needs. Reviewers are separate sessions from the work they review. The Implementer cannot approve its own result, and QA receives both the approved plan and passing code-review report.
+A successful flush returns `true` when at least one durability listener participated and `false` when none did. Both are successful run records, distinguished by `persisted`; a flush rejection is an infrastructure error and rejects the tool call after cleanup. The plugin stores no copy of the transcript outside DSH's session provider.
 
-The tool's in-memory result carries validated phase artifacts. Its renderer persists a compact parent-visible summary with phase state and child ids. Child DSH sessions retain the complete evidence under the ordinary DSH session persistence mechanism.
+The comparison tool validates its request and resolves both preset rows before creating either Agent. Baseline and candidate execute sequentially to avoid conflating concurrent resource effects. A settled baseline record, including any non-completed stop reason, proceeds to the candidate. An infrastructure exception or cancellation before the candidate prevents its creation.
 
-## QA evidence rule
+## Result model
 
-For every approved test-plan case, a QA `PASS` must report the same stable id, exact command, and exit code `0`. The QA session must also contain:
+One run record contains `sessionId`, `preset`, `stopReason`, `durationMs`, `persisted`, and the untouched final assistant content blocks. Native rendering adds compact session and persistence metadata without removing structured blocks from the canonical result. Duration is diagnostic metadata, not evaluation input.
 
-1. a `tool/call` for `shellToolName` whose parsed `arguments.command` exactly matches the plan;
-2. a paired `tool/result` whose `message.source.callId` matches the call;
-3. `isError: false` on that result;
-4. no non-zero exit, signal-kill, or timeout marker in the rendered result.
+Comparison returns `{ baseline, candidate }`. It contains no score, rubric, recommendation, or winner. Evaluation, attribution, candidate authoring, and promotion require separate plugins with their own authority and verification.
 
-The approved test plan must contain at least one case. Case ids and commands are non-empty, ids are unique, and each case consumes a distinct foreground shell call/result pair. A shell call carrying `run_in_background: true` cannot prove a completed test and is rejected. Version 0.1 supports `bash` and `pwsh` evidence formats only.
+## Verification model
 
-Claims without recorded execution evidence become `error`, never `completed`. This validates command execution, not semantic test adequacy; design review remains responsible for the test plan itself.
+Unit tests exercise configuration, authorization, request validation, lineage metadata, lifecycle cleanup, flush outcomes, cancellation, comparison preflight, and stable result rendering. The installed-package test packs the npm artifact, installs it into isolated current-DSH Headless and Web profiles, drives all three tools through a deterministic adapter, reads child JSONL during the parent turn to prove flush timing, queries the SubAgent catalog, and inspects the final persisted logs.
 
-## Authority and security
-
-- Spawned roles inherit the parent's preset composition, workspace, model route unless overridden symmetrically, sandbox policy, and delegated approval policy.
-- Fixed personas are behavioral instructions, not a security sandbox.
-- Every role persona prohibits commit, push, publish, merge, and promotion. The Design Reviewer is instructed to block plans containing them, the Code Reviewer to block implementation reports indicating them, and QA to avoid executing matching test commands and return `BLOCKED`.
-- Tool filters remove global tools from model visibility and dispatch but cannot add absent tools or suppress preset-scoped tools.
-- A permitted shell may mutate files even when file-editing tools are hidden.
-- The orchestration implementation has no direct publishing operation. The persona rules above are behavioral gates: a child with an inherited shell can still perform operations allowed by the deployment sandbox, credentials, and network policy, so deployments own hard enforcement.
-- The orchestration tool is denied in every child to prevent recursive process creation.
-
-## Package verification
-
-Unit tests cover configuration, prompt artifact isolation, phase order, gates, structured-protocol rejection, local-Agent enforcement, QA evidence, cleanup, and provider preflight. Installed-package tests create the npm tarball, install it through current DSH, drive all five real spawn sessions with a deterministic adapter, exercise the real QA shell tool, inspect persisted session logs, cover a rejected design, and retain Headless/Web startup smoke coverage.
-
-The deterministic adapter is not evidence for a real provider's model quality or network protocol. A separately invoked real-provider smoke may complement but cannot replace the keyless installed-package lane.
+The deterministic adapter verifies Loader activation, tool dispatch, preset mounting, Agent execution, persistence, and application startup without a provider key. It does not measure model quality or prove compatibility with every remote provider.
