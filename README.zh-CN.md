@@ -96,7 +96,7 @@ pnpm run check
 DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-集成测试不需要 API key，并使用当前 DSH 的真实产品入口。Headless 用例创建隔离的 `DSH_HOME`，通过 `dsh plugin` 安装 headless bundle 和本插件，使用确定性 LLM adapter 启动 DSH，依次调用 `agent_presets` 和 `agent_run(minimal, ...)`，最后读取落盘的父、子 session 日志。Web 用例把插件安装到另一个隔离 profile，在随机端口启动构建后的 DSH Web，并要求应用根页面返回 HTTP 200。两者共同验证 bundle 安装、Loader 激活、Headless/Web 启动、工具分发、preset mount、子 Agent 执行和持久化。CI 会构建并验证当前 `deepseek-ai/deepseek-harness` checkout。
+集成测试不需要 API key，并使用当前 DSH 的真实产品入口。测试会先生成真正的 npm tarball，让 DSH 安装可分发产物，而不是链接源码目录。Headless 用例创建隔离的 `DSH_HOME`，通过 `dsh plugin` 安装 headless bundle 和本插件，使用确定性 LLM adapter 启动 DSH，依次调用 `agent_presets` 和 `agent_run(minimal, ...)`，最后读取落盘的父、子 session 日志。Web 用例把 tarball 安装到另一个隔离 profile，在随机端口启动构建后的 DSH Web，并要求应用根页面返回 HTTP 200。两者共同验证打包、bundle 安装、依赖解析、Loader 激活、Headless/Web 启动、工具分发、preset mount、子 Agent 执行和持久化。CI 会构建并验证当前 `deepseek-ai/deepseek-harness` checkout。
 
 ## 许可证
 

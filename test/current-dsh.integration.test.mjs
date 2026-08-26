@@ -28,6 +28,19 @@ async function runDsh(args, options) {
   }
 }
 
+async function packPlugin(destination) {
+  const { stdout } = await execFileAsync('npm', [
+    'pack', '--silent', '--pack-destination', destination,
+  ], {
+    cwd: pluginRoot,
+    timeout: 60_000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  const filename = stdout.trim().split(/\r?\n/).at(-1)
+  if (!filename) throw new Error('npm pack did not report an archive')
+  return join(destination, filename)
+}
+
 async function startWebDsh(args, env) {
   const child = spawn(process.execPath, [join(checkout, 'apps', 'cli', 'lib', 'bin.js'), ...args], {
     cwd: checkout,
@@ -101,10 +114,11 @@ test('installs into current DSH, boots headless, and runs preset tools plus a ch
   }
 
   try {
+    const pluginArchive = await packPlugin(home)
     await runDsh([
       'plugin', '--profile', 'agent-factory-integration', 'add',
       `link:${checkout}/packages/bundle/headless`,
-      `link:${pluginRoot}`,
+      pluginArchive,
     ], { env })
     await copyFile(
       join(fixtureRoot, 'mock-llm.mjs'),
@@ -151,10 +165,11 @@ test('installs into the current DSH Web profile and serves the built application
   let server
 
   try {
+    const pluginArchive = await packPlugin(home)
     await runDsh([
       'plugin', '--profile', 'agent-factory-web-integration', 'add',
       `link:${checkout}/packages/bundle/web-app`,
-      `link:${pluginRoot}`,
+      pluginArchive,
     ], { env })
     server = await startWebDsh([
       '--profile', 'agent-factory-web-integration',
