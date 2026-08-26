@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url'
 
 const checkout = process.env.DSH_CHECKOUT
-if (!checkout) throw new Error('DSH_CHECKOUT is required by the Agent Factory integration fixture')
+if (!checkout) throw new Error('DSH_CHECKOUT is required by the reviewed-development integration fixture')
 
 const {
   CallId,
@@ -10,6 +10,9 @@ const {
 } = await import(pathToFileURL(`${checkout}/packages/llm/llm/src/index.ts`).href)
 
 const OFF = ReasoningEffortId('off')
+const QA_COMMAND = "printf 'QA_OK\\n'"
+const IMPLEMENT_MARKER = `${process.env.DSH_HOME}/reviewed-development-implementer.marker`
+const IMPLEMENT_COMMAND = `printf 'implemented\\n' > ${JSON.stringify(IMPLEMENT_MARKER)}`
 
 function messageText(messages) {
   return messages.flatMap(message => message.content)
@@ -49,7 +52,15 @@ async function* emitText(text) {
   yield { type: 'finish', reason: { kind: 'stop' } }
 }
 
-class AgentFactoryMockAdapter extends LlmAdapter {
+function designerArtifact() {
+  return {
+    design: 'Use the approved fixture-only implementation path.',
+    testPlan: [{ id: 'qa-shell', objective: 'Prove QA executes a real shell command.', command: QA_COMMAND, expectedResult: 'QA_OK and exit 0' }],
+    risks: [{ risk: 'false positive', mitigation: 'verify the persisted shell call and result' }],
+  }
+}
+
+class ReviewedDevelopmentMockAdapter extends LlmAdapter {
   async resolveModel(provider, model) {
     return {
       provider,
@@ -64,48 +75,87 @@ class AgentFactoryMockAdapter extends LlmAdapter {
 
   async* stream(options) {
     const text = messageText(options.messages)
-    if (text.includes('FACTORY_CHILD_TASK')) {
-      yield* emitText('FACTORY_CHILD_OK')
-      return
-    }
-
     const calls = toolCalls(options.messages)
     const results = toolResults(options.messages)
-    if (!calls.some(call => call.name === 'agent_presets')) {
-      yield* emitToolCall('factory-list', 'agent_presets', {})
-      return
-    }
-    if (!calls.some(call => call.name === 'agent_run')) {
-      const presetResult = results.at(-1)
-      const presetText = presetResult?.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text)
-        .join('') ?? ''
-      if (!presetText.includes('minimal')) {
-        yield* emitText(`FACTORY_PROBE_FAILED: minimal preset missing: ${presetText}`)
+
+    if (text.includes('# Passing code-review report')) {
+      if (!calls.some(call => call.name === 'bash')) {
+        yield* emitToolCall('qa-shell-call', 'bash', { command: QA_COMMAND, description: 'run the approved QA probe' })
         return
       }
-      yield* emitToolCall('factory-run', 'agent_run', {
-        preset: 'minimal',
-        task: 'FACTORY_CHILD_TASK',
+      yield* emitToolCall('qa-output', 'structured_output', {
+        verdict: 'PASS',
+        summary: 'The approved command passed.',
+        checks: [{ id: 'qa-shell', command: QA_COMMAND, exitCode: 0, evidence: 'QA_OK' }],
+        findings: [],
       })
       return
     }
 
-    const runResult = results.at(-1)
-    const runText = runResult?.content
+    if (text.includes('# Implementation report')) {
+      yield* emitToolCall('code-review-output', 'structured_output', {
+        verdict: 'PASS',
+        summary: 'Implementation matches the approved design.',
+        findings: [],
+      })
+      return
+    }
+
+    if (text.includes('# Approved design and test plan')) {
+      if (!calls.some(call => call.name === 'bash')) {
+        yield* emitToolCall('implementation-shell', 'bash', {
+          command: IMPLEMENT_COMMAND,
+          description: 'write the integration implementation marker',
+        })
+        return
+      }
+      yield* emitToolCall('implementation-output', 'structured_output', {
+        summary: 'Created the integration implementation marker.',
+        changedFiles: ['$DSH_HOME/reviewed-development-implementer.marker'],
+        testsRun: [{ command: IMPLEMENT_COMMAND, exitCode: 0 }],
+      })
+      return
+    }
+
+    if (text.includes('# Proposed design and test plan')) {
+      yield* emitToolCall('design-review-output', 'structured_output', text.includes('REJECT_DESIGN')
+        ? { verdict: 'CHANGES_REQUIRED', summary: 'The rejection branch was requested.', findings: [{ severity: 'blocker', subject: 'probe', requiredCorrection: 'Use an approvable task.' }] }
+        : { verdict: 'PASS', summary: 'The design and test plan are executable.', findings: [] })
+      return
+    }
+
+    if (text.includes('# Development task')) {
+      yield* emitToolCall('designer-output', 'structured_output', designerArtifact())
+      return
+    }
+
+    if (!calls.some(call => call.name === 'run_reviewed_development')) {
+      const task = text.includes('REJECT_DESIGN')
+        ? 'REJECT_DESIGN integration task'
+        : 'Complete the reviewed development integration task.'
+      yield* emitToolCall('orchestrator-run', 'run_reviewed_development', { task })
+      return
+    }
+
+    const resultText = results.at(-1)?.content
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('') ?? ''
-    yield* emitText(runText.includes('FACTORY_CHILD_OK')
-      ? 'FACTORY_PARENT_OK'
-      : `FACTORY_PROBE_FAILED: child output missing: ${runText}`)
+    if (text.includes('REJECT_DESIGN')) {
+      yield* emitText(resultText.includes('changes_required') && resultText.includes('design_review')
+        ? 'ORCHESTRATOR_REJECT_OK'
+        : `ORCHESTRATOR_REJECT_FAILED: ${resultText}`)
+      return
+    }
+    yield* emitText(resultText.includes('Reviewed development: completed') && resultText.includes('session=')
+      ? 'ORCHESTRATOR_PARENT_OK'
+      : `ORCHESTRATOR_PROBE_FAILED: ${resultText}`)
   }
 }
 
-export const name = 'agent-factory-integration-mock-llm'
+export const name = 'reviewed-development-integration-mock-llm'
 export const inject = ['llm']
 
 export function apply(ctx) {
-  ctx.llm.registerAdapter(['agent-factory-mock'], new AgentFactoryMockAdapter())
+  ctx.llm.registerAdapter(['reviewed-development-mock'], new ReviewedDevelopmentMockAdapter())
 }

@@ -1,12 +1,15 @@
 - id: agent-default-model
   config:
-    provider: agent-factory-mock
-    model: agent-factory-mock
+    provider: reviewed-development-mock
+    model: reviewed-development-mock
 
 - id: session-persistence-jsonl
   config:
     root: !!js dshHomePath('sessions')
     compression: none
+
+- id: headless-runner
+  disabled: true
 
 - insert:
     - id: agent-presets
@@ -18,5 +21,9 @@
             trust: system
         includeUserRoot: false
 
-    - id: agent-factory-integration-mock-llm
+    - id: reviewed-development-integration-mock-llm
       name: './mock-llm.mjs'
+
+    - id: reviewed-development-preset-headless-runner
+      name: './preset-headless-runner.mjs'
+      inject: [headlessStartup]

@@ -1,103 +1,94 @@
-# dsh-agent-factory
+# dsh-reviewed-development-orchestrator
 
 [English](README.md)
 
-这是一个公开的 DeepSeek Harness 插件：它按 DSH Agent preset 组装专用子 Agent，并支持可复现的 baseline/candidate 对照实验。
+这是一个公开的 DeepSeek Harness bundle，通过五个全新的 DSH SubAgent session 强制执行带独立评审的软件开发流程：
 
-关于 Runner → Evaluator → Author → Promoter 的演进分层，见 [Architecture](docs/architecture.md)。
+```text
+设计 Agent -> 设计评审 Agent -> 开发 Agent -> 代码评审 Agent -> QA Agent
+```
 
-## 提供的能力
+它只暴露一个模型工具：`run_reviewed_development`。评审不通过会立即停止；QA 也不能只靠文字声称测试通过。只有当批准的每条测试命令都能在 QA 子 session 中找到匹配且成功的 shell 调用与结果时，QA 的 `PASS` 才会被接受。
 
-- `agent_presets`：列出当前 DSH 部署可用的 preset。
-- `agent_run`：使用明确指定的 preset 创建全新子 Agent，并执行一个完整、独立的任务。
-- `agent_compare`：让 baseline preset 和 candidate preset 执行同一个任务，返回两边结果，但不虚构自动胜负结论。
+## Bundle 安装什么
 
-每次运行都有独立的 DSH session。工具结果返回 session id、preset、结束原因、耗时和最终 assistant 内容。DSH session log 是持久化事实来源；本插件不会再维护一份重复的对话库。
+Bundle 插入一个运行时插件 `reviewed-development-orchestrator`。该插件注册一个工具，并调用 DSH 已有的 `spawn` SubAgent provider。它不复制 preset、不替换 Agent loop，也不建立第二套对话存储。
 
-## 为什么选择 preset，而不是任意 plugin 数组
+每个角色都有固定 persona、结构化输出 schema 和工具限制。子 Agent 继承入口 Agent 的 preset、模型路由、工作目录、sandbox policy 和委托后的 approval policy。每个子 session 是完整 prompt、输出、工具证据、provider descriptor、lineage 和 preset 信息的持久化依据；父 Agent 只接收带子 session id 的紧凑阶段摘要。
 
-preset 是 DSH 原生的单 Agent 组装单元。每个候选方案都有可审查的 `agent.cordis.yml`、稳定的工具和提示注册，以及正常的生命周期清理。Factory 只从已授权 preset 中选择，不接受模型动态生成的包名或插件路径。
+## 固定流程
 
-Host 仍然负责持久化、模型路由、沙箱策略、审批策略和 Agent registry 等共享服务；worker 只拥有 preset 选定的模型可见组装。
+1. 设计 Agent 检查仓库，给出可直接实施的设计、风险和精确测试方案；其 persona 禁止把 commit、push、publish、merge 或 promotion 写入实施或测试步骤。
+2. 设计评审 Agent 返回 `PASS`、`CHANGES_REQUIRED` 或 `BLOCKED`；当设计或测试方案包含上述发布操作时，其 persona 要求返回 `BLOCKED`。只有 `PASS` 才进入开发。
+3. 开发 Agent 按已批准设计修改工作区，并报告变更文件与已运行检查；其 persona 禁止 commit、push、publish、merge 和 promotion。
+4. 代码评审 Agent 独立检查需求符合度和代码质量；当实现报告表明执行过上述发布操作时，其 persona 要求返回 `BLOCKED`。只有 `PASS` 才进入 QA。
+5. QA Agent 执行其他已批准测试命令，返回 `PASS`、`FAIL` 或 `BLOCKED`；遇到包含或执行上述发布操作的测试命令时，其 persona 要求不要执行并返回 `BLOCKED`。编排器会用 session 中的真实 shell 事件复核 `PASS`。
+
+编排器自身不实现专用的 commit、push、publish、merge 或 preset 提升操作。五个固定 persona 均明确禁止这些行为，评审和 QA persona 还定义了上述阻断行为。但这些是行为层工作流门禁，不是安全保证：继承的 shell 仍具有部署 sandbox 所授予的权限。需要强制隔离时，部署方必须在本插件之外限制凭据、网络、工具和文件系统权限。首个版本不会在评审失败后自动修改重试。
 
 ## 安装
 
-DSH 仍处于 developer preview，建议锁定审查过的 commit，不要直接跟随移动分支：
+DSH 仍处于开发预览阶段，建议固定到已审查的 commit：
 
 ```sh
-dsh plugin --profile web add github:FriendsHL/dsh-agent-factory#<commit>
+dsh plugin --profile web add github:FriendsHL/dsh-reviewed-development-orchestrator#<commit>
 ```
 
-随后刷新页面或重启 DSH Web profile。Bundle 会加入以下配置层：
+Bundle 提供以下配置层：
 
 ```yaml
 - insert:
-    - id: agent-factory
-      name: dsh-agent-factory
+    - id: reviewed-development-orchestrator
+      name: dsh-reviewed-development-orchestrator
       config:
+        providerName: spawn
         maxDepth: 3
-        runToolName: agent_run
-        compareToolName: agent_compare
-        listToolName: agent_presets
 ```
 
-本地开发安装：
+本地开发：
 
 ```sh
-dsh plugin --profile web add link:/absolute/path/to/dsh-agent-factory
+dsh plugin --profile web add link:/absolute/path/to/dsh-reviewed-development-orchestrator
 ```
-
-本包直接提交可运行的 ESM JavaScript，不使用 `prepare`，所以从 Git 安装不需要授权安装期构建脚本。
 
 ## 配置
 
-| 字段 | 默认值 | 作用 |
+| 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `maxDepth` | `3` | 允许的绝对委派深度上限；`0` 会禁止 Factory 启动子 Agent。 |
-| `runToolName` | `agent_run` | 单次运行工具名。 |
-| `compareToolName` | `agent_compare` | 对照实验工具名。 |
-| `listToolName` | `agent_presets` | preset 发现工具名。 |
-| `allowedPresets` | 全部已发现 preset | 可选白名单；显式空数组会在加载时失败。 |
+| `providerName` | `spawn` | 已注册的全新进程内 spawn provider。 |
+| `maxDepth` | `3` | 所有角色共用的绝对委托深度上限。 |
+| `maxTokens` | 继承 | 可选正整数，统一应用到所有角色。 |
+| `shellToolName` | `bash`（Windows 为 `pwsh`） | 用于核验 QA 真实执行记录的受支持 shell 工具名；其他名称会被拒绝。 |
+| `designerTools` | 继承 | 设计 Agent 可选的非空工具白名单。 |
+| `reviewerTools` | 继承 | 两个 Reviewer 共用的可选非空工具白名单。 |
+| `qaTools` | 继承 | QA 可选非空工具白名单，必须包含 `shellToolName`。 |
 
-子 Agent 默认继承父 Agent 的模型路由；工具调用可以覆盖 provider、model 和最大输出 token。子 Agent 会继承父会话显式沙箱模式并使用委派审批策略；切换 preset 不会扩大权限。
+编排工具在所有子角色中始终不可用。工具过滤只控制模型可见性与调用权限，不是文件系统安全边界；真正的权限仍由宿主 sandbox 决定。配置未知工具时，子 Agent 启动会明确失败。
 
-## 使用示例
+## 工具输入与结果
 
-```text
-调用 agent_compare：
-- baseline_preset: standard
-- candidate_preset: my-coding-v2
-- task: 审查认证模块中的真实越权缺陷，并引用文件与行号。
-```
+`run_reviewed_development` 接收非空、可独立理解的 `task`。可选的 `provider` 与 `model` 必须成对提供；`max_tokens` 会统一应用到五个角色。
 
-对照工具只返回证据，不直接评分。后续可以由独立 evaluator 插件使用固定 rubric 评分、归因，并决定是否晋升 candidate。
+终态包括 `completed`、`changes_required`、`failed`、`blocked`、`cancelled` 和 `error`。每个阶段记录角色、子 session id、停止原因、耗时、适用时的 verdict、摘要和已验证结构化结果。完整证据应通过返回的子 session id 查看。
 
-## 当前边界
+## 开发规范
 
-`0.1.0` 先验证“组装 + 实验”这个基础能力，暂不负责：
+本仓库自身也执行相同分工：先写设计和对应测试方案，独立设计评审通过后交给开发 SubAgent，实现后进行独立代码评审，最后由 QA Agent 按批准方案提供新鲜测试证据。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 和已通过评审的[设计文档](docs/designs/0001-software-development-orchestrator.md)。
 
-- 自动编辑或生成 candidate preset；
-- 自动评分；
-- 把 candidate 晋升为默认 preset；
-- 定时运行评测集；
-- 提供 Web 实验面板。
-
-这些能力适合拆成独立插件或后续层，使运行 Agent、评估、修改组装和晋升分别拥有清晰权限。
-
-## 社区发现
-
-仓库使用 `dsh-plugin` GitHub topic，这是当前 DSH 社区的事实发现约定。社区目录和内置市场可以从该 topic 自动索引，也可以通过 PR 收录。被市场列出不等于安全背书；安装前仍应审查源码并锁定 commit。
-
-## 开发检查
+## 验证
 
 ```sh
 pnpm run check
-# Web 启动用例要求先在 DSH checkout 中执行一次 `pnpm run build`。
+# Web 启动用例前需先构建一次 DSH checkout。
 DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-集成测试不需要 API key，并使用当前 DSH 的真实产品入口。测试会先生成真正的 npm tarball，让 DSH 安装可分发产物，而不是链接源码目录。Headless 用例创建隔离的 `DSH_HOME`，通过 `dsh plugin` 安装 headless bundle 和本插件，使用确定性 LLM adapter 启动 DSH，依次调用 `agent_presets` 和 `agent_run(minimal, ...)`，最后读取落盘的父、子 session 日志。Web 用例把 tarball 安装到另一个隔离 profile，在随机端口启动构建后的 DSH Web，并要求应用根页面返回 HTTP 200。两者共同验证打包、bundle 安装、依赖解析、Loader 激活、Headless/Web 启动、工具分发、preset mount、子 Agent 执行和持久化。CI 会构建并验证当前 `deepseek-ai/deepseek-harness` checkout。
+无 API key 的安装集成测试会打包真实 npm tarball，通过 `dsh plugin` 安装到隔离的 Headless 与 Web profile，并验证：五个角色按顺序走真实 `spawn` provider；所有子 Agent 继承入口的 `minimal` preset；设计拒绝后不会进入开发；QA 通过真实 shell 工具执行批准命令且持久化结果成功；父 session 保存紧凑结果与子 session id；构建后的 DSH Web 能启动并返回 HTTP 200。
 
-## 许可证
+确定性 adapter 验证 bundle 加载、编排、工具、生命周期、持久化和 gate，不代表真实模型 provider 的兼容性；真实 provider smoke 可另行执行。
+
+运行时结构与限制见 [Architecture](docs/architecture.md)。
+
+## License
 
 MIT
