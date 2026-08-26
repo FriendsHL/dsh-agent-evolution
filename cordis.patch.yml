@@ -1,0 +1,8 @@
+- insert:
+    - id: agent-factory
+      name: dsh-agent-factory
+      config:
+        maxDepth: 3
+        runToolName: agent_run
+        compareToolName: agent_compare
+        listToolName: agent_presets
