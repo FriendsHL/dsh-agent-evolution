@@ -24,8 +24,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test",
-    "check": "node --check index.js && node --check src/result.js && pnpm run test",
+    "test": "node --test test/result.test.js",
+    "test:integration": "node --test test/current-dsh.integration.test.mjs",
+    "check": "node --check index.js && node --check src/result.js && node --check test/current-dsh.integration.test.mjs && node --check test/fixtures/current-dsh/mock-llm.mjs && pnpm run test",
     "prepack": "pnpm run check"
   },
   "dsh": {

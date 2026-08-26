@@ -68,4 +68,4 @@ The Runner should remain small even as later layers grow. It is the execution pr
 - Comparison runs are sequential and can see external state changes between executions.
 - Duration is diagnostic metadata, not a quality score.
 - An Agent preset is selected by id; this version does not attach a source commit or content digest to the result.
-- Full end-to-end tests require an assembled DSH profile and an LLM provider or deterministic fixture provider.
+- The keyless integration lane uses a deterministic LLM provider. A separate real-provider smoke remains useful for provider-specific behavior, but is not required to prove the Agent Factory lifecycle.

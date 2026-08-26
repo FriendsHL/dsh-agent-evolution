@@ -1,0 +1,22 @@
+- id: agent-default-model
+  config:
+    provider: agent-factory-mock
+    model: agent-factory-mock
+
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: minimal
+        roots:
+          - path: !!js process.env.DSH_CHECKOUT + '/apps/cli/config/agent-presets'
+            trust: system
+        includeUserRoot: false
+
+    - id: agent-factory-integration-mock-llm
+      name: './mock-llm.mjs'

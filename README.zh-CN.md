@@ -92,9 +92,11 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-agent-factory
 
 ```sh
 pnpm run check
+# Web 启动用例要求先在 DSH checkout 中执行一次 `pnpm run build`。
+DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-运行时代码只使用 DSH 公开服务与工具。纯结果处理有不依赖 API key 的单元测试；完整生命周期集成需要装配好的 DSH profile。
+集成测试不需要 API key，并使用当前 DSH 的真实产品入口。Headless 用例创建隔离的 `DSH_HOME`，通过 `dsh plugin` 安装 headless bundle 和本插件，使用确定性 LLM adapter 启动 DSH，依次调用 `agent_presets` 和 `agent_run(minimal, ...)`，最后读取落盘的父、子 session 日志。Web 用例把插件安装到另一个隔离 profile，在随机端口启动构建后的 DSH Web，并要求应用根页面返回 HTTP 200。两者共同验证 bundle 安装、Loader 激活、Headless/Web 启动、工具分发、preset mount、子 Agent 执行和持久化。CI 会构建并验证当前 `deepseek-ai/deepseek-harness` checkout。
 
 ## 许可证
 

@@ -92,9 +92,11 @@ The repository uses the `dsh-plugin` GitHub topic, which is DSH's current commun
 
 ```sh
 pnpm run check
+# Run `pnpm run build` once in the DSH checkout before the Web startup case.
+DSH_CHECKOUT=/absolute/path/to/deepseek-harness pnpm run test:integration
 ```
 
-The runtime intentionally uses only DSH public services and tools. Pure result formatting has keyless unit tests; an assembled DSH profile is required for lifecycle integration testing.
+The integration test is keyless and uses current DSH product entry paths. Its headless case creates an isolated `DSH_HOME`, installs the headless bundle and this plugin through `dsh plugin`, starts DSH with a deterministic LLM adapter, calls `agent_presets`, calls `agent_run` with the shipped `minimal` preset, and then reads the persisted parent and child session logs. Its Web case installs the plugin into an isolated Web profile, starts the built DSH server on a random port, and requires the application root to return HTTP 200. Together they prove bundle installation, Loader activation, headless and Web startup, tool dispatch, preset mounting, child Agent execution, and persistence. CI builds and checks the plugin against the current `deepseek-ai/deepseek-harness` checkout.
 
 ## License
 

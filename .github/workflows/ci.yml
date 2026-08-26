@@ -19,3 +19,26 @@ jobs:
       - run: corepack enable
       - run: pnpm run check
       - run: npm pack --dry-run
+
+  current-dsh-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          path: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - name: Install current DSH checkout
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+      - name: Build current DSH checkout
+        working-directory: deepseek-harness
+        run: pnpm run build
+      - name: Run installed-plugin integration test
+        env:
+          DSH_CHECKOUT: ${{ github.workspace }}/deepseek-harness
+        run: pnpm run test:integration
